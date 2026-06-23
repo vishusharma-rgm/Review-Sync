@@ -522,7 +522,7 @@ a {
   padding: 16px;
   position: sticky;
   top: 72px;
-  max-height: 700px;
+  max-height: 350px;
   overflow-y: auto;
 }
 
@@ -910,6 +910,11 @@ a {
   display: grid;
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.right-rail .activity-row {
+  padding: 10px 12px;
+  gap: 6px;
 }
 
 .panel-section:has(.thread),
