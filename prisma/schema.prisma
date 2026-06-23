@@ -1,0 +1,101 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  REVIEWER
+  VIEWER
+}
+
+enum SuggestionStatus {
+  OPEN
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id        String       @id @default(cuid())
+  name      String
+  email     String       @unique
+  password  String
+  createdAt DateTime     @default(now())
+  documents Document[]   @relation("DocumentOwner")
+  memberships Membership[]
+  comments  Comment[]
+  suggestions Suggestion[]
+}
+
+model Document {
+  id          String       @id @default(cuid())
+  title       String
+  language    String       @default("typescript")
+  content     String       @default("")
+  ownerId     String
+  owner       User         @relation("DocumentOwner", fields: [ownerId], references: [id])
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  memberships Membership[]
+  versions    Version[]
+  comments    Comment[]
+  suggestions Suggestion[]
+
+  @@index([ownerId])
+}
+
+model Membership {
+  id         String   @id @default(cuid())
+  userId     String
+  documentId String
+  role       Role     @default(REVIEWER)
+  user       User     @relation(fields: [userId], references: [id])
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, documentId])
+  @@index([documentId])
+}
+
+model Version {
+  id         String   @id @default(cuid())
+  documentId String
+  label      String
+  content    String
+  createdAt  DateTime @default(now())
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, createdAt])
+}
+
+model Comment {
+  id         String   @id @default(cuid())
+  documentId String
+  authorId   String
+  line       Int
+  body       String
+  resolved   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  author     User     @relation(fields: [authorId], references: [id])
+
+  @@index([documentId, line])
+}
+
+model Suggestion {
+  id              String           @id @default(cuid())
+  documentId      String
+  authorId        String
+  startLine       Int
+  endLine         Int
+  replacementText String
+  status          SuggestionStatus @default(OPEN)
+  createdAt       DateTime         @default(now())
+  document        Document         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  author          User             @relation(fields: [authorId], references: [id])
+
+  @@index([documentId, status])
+}
