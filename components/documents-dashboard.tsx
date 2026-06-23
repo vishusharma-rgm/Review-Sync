@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Code2, FilePlus2, GitBranch, History, MessageSquare, Search, SlidersHorizontal, UsersRound, X } from "lucide-react";
 import type { ActivityEvent, DocumentDetail, Suggestion, Version, WorkflowStatus } from "@/lib/types";
@@ -56,8 +56,21 @@ function saveDocuments(documents: DocumentDetail[]) {
   window.localStorage.setItem(localDocumentsKey, JSON.stringify(documents));
 }
 
-function relativeTime(iso: string) {
-  const delta = Date.now() - new Date(iso).getTime();
+function useClock() {
+  const [nowMs, setNowMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    setNowMs(Date.now());
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  return nowMs;
+}
+
+function relativeTime(iso: string, nowMs: number | null) {
+  if (!nowMs) return "recently";
+  const delta = nowMs - new Date(iso).getTime();
   const minutes = Math.max(1, Math.round(delta / 60_000));
   if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.round(minutes / 60);
@@ -105,6 +118,7 @@ export function DocumentsDashboard({ initialDocuments, initialQuery, view }: Pro
   const [title, setTitle] = useState("service-review.ts");
   const [language, setLanguage] = useState("typescript");
   const [selectedVersionId, setSelectedVersionId] = useState(documents[0]?.versions[0]?.id ?? "");
+  const nowMs = useClock();
   const languages = useMemo(() => Array.from(new Set(documents.map((doc) => doc.language))), [documents]);
   const primaryDoc = documents[0];
   const activity = allActivity(documents);
@@ -218,11 +232,12 @@ export function DocumentsDashboard({ initialDocuments, initialQuery, view }: Pro
           setQuery={setQuery}
           suggestions={suggestions}
           versions={versions}
+          nowMs={nowMs}
         />
       ) : null}
 
       {view === "reviews" ? (
-        <ReviewsView activity={activity} items={reviewItems} onStatus={updateReviewStatus} />
+        <ReviewsView activity={activity} items={reviewItems} nowMs={nowMs} onStatus={updateReviewStatus} />
       ) : null}
 
       {view === "suggestions" ? (
@@ -230,7 +245,13 @@ export function DocumentsDashboard({ initialDocuments, initialQuery, view }: Pro
       ) : null}
 
       {view === "versions" ? (
-        <VersionsView diff={diff} items={versionItems} selectedId={selectedVersion?.version.id ?? ""} onSelect={setSelectedVersionId} />
+        <VersionsView
+          diff={diff}
+          items={versionItems}
+          nowMs={nowMs}
+          selectedId={selectedVersion?.version.id ?? ""}
+          onSelect={setSelectedVersionId}
+        />
       ) : null}
 
       {view === "roles" ? <RolesView /> : null}
@@ -289,6 +310,7 @@ function DocumentsView(props: {
   setQuery: (value: string) => void;
   suggestions: number;
   versions: number;
+  nowMs: number | null;
 }) {
   return (
     <>
@@ -403,7 +425,7 @@ function DocumentsView(props: {
             ))}
           </div>
         </main>
-        <RecentActivity activity={props.activity} />
+        <RecentActivity activity={props.activity} nowMs={props.nowMs} />
       </div>
     </>
   );
@@ -412,6 +434,7 @@ function DocumentsView(props: {
 function ReviewsView(props: {
   activity: Array<ActivityEvent & { file: string }>;
   items: Array<{ id: string; doc: DocumentDetail; reviewer: string; pendingComments: number }>;
+  nowMs: number | null;
   onStatus: (documentId: string, status: WorkflowStatus) => void;
 }) {
   return (
@@ -450,7 +473,7 @@ function ReviewsView(props: {
           ))}
         </div>
       </main>
-      <RecentActivity activity={props.activity} />
+      <RecentActivity activity={props.activity} nowMs={props.nowMs} />
     </div>
   );
 }
@@ -506,6 +529,7 @@ function SuggestionsView(props: {
 function VersionsView(props: {
   diff: { oldLines: string[]; newLines: string[] };
   items: Array<{ doc: DocumentDetail; version: Version }>;
+  nowMs: number | null;
   selectedId: string;
   onSelect: (id: string) => void;
 }) {
@@ -521,7 +545,7 @@ function VersionsView(props: {
             onClick={() => props.onSelect(version.id)}
           >
             <strong>{version.label}</strong>
-            <span>{relativeTime(version.createdAt)}</span>
+            <span>{relativeTime(version.createdAt, props.nowMs)}</span>
             <span>Changed By: {version.authorName ?? "System"}</span>
             <span>Commit Message: {version.commitMessage ?? "Update reviewed changes"}</span>
             <span>{doc.title}</span>
@@ -581,7 +605,7 @@ function RolesView() {
   );
 }
 
-function RecentActivity({ activity }: { activity: Array<ActivityEvent & { file: string }> }) {
+function RecentActivity({ activity, nowMs }: { activity: Array<ActivityEvent & { file: string }>; nowMs: number | null }) {
   return (
     <aside className="right-rail">
       <h2>Recent Activity</h2>
@@ -592,7 +616,7 @@ function RecentActivity({ activity }: { activity: Array<ActivityEvent & { file: 
           </strong>
           <span>{event.target}</span>
           <span className="muted">
-            {event.file} · {relativeTime(event.createdAt)}
+            {event.file} · {relativeTime(event.createdAt, nowMs)}
           </span>
         </div>
       ))}

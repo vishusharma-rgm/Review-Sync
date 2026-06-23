@@ -4,7 +4,6 @@ import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { diffLines } from "diff";
 import { io, type Socket } from "socket.io-client";
-import * as Y from "yjs";
 import {
   Activity,
   Check,
@@ -74,8 +73,21 @@ function loadStoredDocument(initialDocument: DocumentDetail) {
   }
 }
 
-function relativeTime(iso: string) {
-  const delta = Date.now() - new Date(iso).getTime();
+function useClock() {
+  const [nowMs, setNowMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    setNowMs(Date.now());
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  return nowMs;
+}
+
+function relativeTime(iso: string, nowMs: number | null) {
+  if (!nowMs) return "recently";
+  const delta = nowMs - new Date(iso).getTime();
   const minutes = Math.max(1, Math.round(delta / 60_000));
   if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.round(minutes / 60);
@@ -121,8 +133,9 @@ export function EditorWorkspace({ initialDocument }: Props) {
   const [autosaveStatus, setAutosaveStatus] = useState("Saved");
   const [presence, setPresence] = useState<PresenceUser[]>(documentData.activeUsers);
   const [selectedVersionId, setSelectedVersionId] = useState(documentData.versions[0]?.id ?? "");
+  const nowMs = useClock();
   const socketRef = useRef<Socket | null>(null);
-  const ydocRef = useRef<Y.Doc | null>(null);
+  const ydocRef = useRef<import("yjs").Doc | null>(null);
   const autosaveRef = useRef<number | null>(null);
   const applyingRemoteRef = useRef(false);
   const role = documentData.role;
@@ -165,53 +178,70 @@ export function EditorWorkspace({ initialDocument }: Props) {
   }, [activeUsers, activity, autosaveStatus, comments, content, documentData, suggestions, versions, workflowStatus]);
 
   useEffect(() => {
-    const ydoc = new Y.Doc();
-    const ytext = ydoc.getText("content");
-    ydocRef.current = ydoc;
+    let disposed = false;
+    let socket: Socket | null = null;
+    let ydoc: import("yjs").Doc | null = null;
+    let observer: ((update: Uint8Array) => void) | null = null;
 
-    const realtimeUrl = process.env.NEXT_PUBLIC_REALTIME_URL || "http://localhost:4000";
-    const socket = io(realtimeUrl, {
-      transports: ["websocket"],
-      query: {
-        documentId: documentData.id,
-        userId: "user-current",
-        name: "Vishu"
-      }
-    });
-    socketRef.current = socket;
+    async function connectRealtime() {
+      const Y = await import("yjs");
+      if (disposed) return;
 
-    socket.on("connect", () => setSyncStatus("Live"));
-    socket.on("disconnect", () => setSyncStatus("Reconnecting"));
-    socket.on("presence", (users: PresenceUser[]) => setPresence(users));
-    socket.on("activity:new", (event: ActivityEvent) => setActivity((current) => [event, ...current].slice(0, 12)));
-    socket.on("sync:init", (payload: { update: ArrayBuffer }) => {
-      applyingRemoteRef.current = true;
-      Y.applyUpdate(ydoc, new Uint8Array(payload.update));
-      applyingRemoteRef.current = false;
-      if (ytext.length === 0 && documentData.content.length > 0) {
-        ytext.insert(0, documentData.content);
-      }
-      setContent(ytext.toString());
-    });
-    socket.on("sync:update", (payload: { update: ArrayBuffer }) => {
-      applyingRemoteRef.current = true;
-      Y.applyUpdate(ydoc, new Uint8Array(payload.update));
-      setContent(ytext.toString());
-      applyingRemoteRef.current = false;
-    });
+      ydoc = new Y.Doc();
+      const ytext = ydoc.getText("content");
+      ydocRef.current = ydoc;
 
-    const observer = (update: Uint8Array) => {
-      if (!applyingRemoteRef.current) {
-        socket.emit("sync:update", { documentId: documentData.id, update });
-      }
-    };
+      const realtimeUrl = process.env.NEXT_PUBLIC_REALTIME_URL || "http://localhost:4000";
+      socket = io(realtimeUrl, {
+        transports: ["websocket"],
+        query: {
+          documentId: documentData.id,
+          userId: "user-current",
+          name: "Vishu"
+        }
+      });
+      socketRef.current = socket;
 
-    ydoc.on("update", observer);
+      socket.on("connect", () => setSyncStatus("Live"));
+      socket.on("disconnect", () => setSyncStatus("Reconnecting"));
+      socket.on("presence", (users: PresenceUser[]) => setPresence(users));
+      socket.on("activity:new", (event: ActivityEvent) => setActivity((current) => [event, ...current].slice(0, 12)));
+      socket.on("sync:init", (payload: { update: ArrayBuffer }) => {
+        if (!ydoc) return;
+        applyingRemoteRef.current = true;
+        Y.applyUpdate(ydoc, new Uint8Array(payload.update));
+        applyingRemoteRef.current = false;
+        if (ytext.length === 0 && documentData.content.length > 0) {
+          ytext.insert(0, documentData.content);
+        }
+        setContent(ytext.toString());
+      });
+      socket.on("sync:update", (payload: { update: ArrayBuffer }) => {
+        if (!ydoc) return;
+        applyingRemoteRef.current = true;
+        Y.applyUpdate(ydoc, new Uint8Array(payload.update));
+        setContent(ytext.toString());
+        applyingRemoteRef.current = false;
+      });
+
+      observer = (update: Uint8Array) => {
+        if (!applyingRemoteRef.current) {
+          socket?.emit("sync:update", { documentId: documentData.id, update });
+        }
+      };
+
+      ydoc.on("update", observer);
+    }
+
+    connectRealtime();
 
     return () => {
-      ydoc.off("update", observer);
-      socket.disconnect();
-      ydoc.destroy();
+      disposed = true;
+      if (ydoc && observer) ydoc.off("update", observer);
+      socket?.disconnect();
+      ydoc?.destroy();
+      if (socketRef.current === socket) socketRef.current = null;
+      if (ydocRef.current === ydoc) ydocRef.current = null;
     };
   }, [documentData.activeUsers, documentData.content, documentData.id]);
 
@@ -460,7 +490,7 @@ export function EditorWorkspace({ initialDocument }: Props) {
                 <Activity size={14} /> {event.actorName} {event.action}
               </strong>
               <span>{event.target}</span>
-              <span className="muted">{relativeTime(event.createdAt)}</span>
+              <span className="muted">{relativeTime(event.createdAt, nowMs)}</span>
             </div>
           ))}
         </section>
@@ -485,7 +515,7 @@ export function EditorWorkspace({ initialDocument }: Props) {
               <strong>Line {comment.line}</strong>
               <div>{comment.body}</div>
               <div className="muted">
-                {comment.authorName} · {relativeTime(comment.createdAt)}
+                {comment.authorName} · {relativeTime(comment.createdAt, nowMs)}
               </div>
             </div>
           ))}
@@ -541,7 +571,7 @@ export function EditorWorkspace({ initialDocument }: Props) {
               <strong>
                 <span className="timeline-dot" /> {version.label}
               </strong>
-              <span>{relativeTime(version.createdAt)}</span>
+              <span>{relativeTime(version.createdAt, nowMs)}</span>
               <span className="muted">Changed By: {version.authorName ?? "System"}</span>
               <span className="muted">Commit Message: {version.commitMessage ?? "Update reviewed changes"}</span>
             </button>

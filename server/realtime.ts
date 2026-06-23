@@ -12,11 +12,15 @@ type Presence = {
   column: number;
 };
 
-const port = Number(process.env.REALTIME_PORT || 4000);
+const port = Number(process.env.PORT || process.env.REALTIME_PORT || 4000);
+const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:3000,http://127.0.0.1:3000")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 const httpServer = createServer();
 const io = new Server(httpServer, {
   cors: {
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000"]
+    origin: allowedOrigins
   }
 });
 
@@ -105,6 +109,6 @@ io.on("connection", (socket) => {
   });
 });
 
-httpServer.listen(port, () => {
-  console.log(`ReviewSync realtime server listening on http://localhost:${port}`);
+httpServer.listen(port, "0.0.0.0", () => {
+  console.log(`ReviewSync realtime server listening on port ${port}`);
 });
